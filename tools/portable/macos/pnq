@@ -81,8 +81,9 @@ fi
 if command -v xattr >/dev/null 2>&1 && [ -x "$BIN_DIR/mihomo" ]; then
   if xattr -p com.apple.quarantine "$BIN_DIR/mihomo" >/dev/null 2>&1; then
     msg "[*] 首次运行：正在清除 macOS 隔离属性（xattr -dr com.apple.quarantine）…"
-    xattr -dr com.apple.quarantine "$RT" 2>/dev/null || true
-    xattr -dr com.apple.quarantine "$HERE/bin" "$HERE/lib" 2>/dev/null || true
+    # 清整个包目录：除了运行时，还包含 pnq / 双击运行.command 自己。
+    # 这样用户「右键→打开」绕过一次之后，后面直接双击就不会再被拦。
+    xattr -dr com.apple.quarantine "$HERE" 2>/dev/null || true
   fi
 fi
 
