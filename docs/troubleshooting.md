@@ -160,6 +160,9 @@ iperf3 则可能量到回环/本地 TUN 的吞吐。本机 DNS 是 `198.18.0.170
 | 一边跑一边改 `.sh` | bash 是**增量读取**脚本的，运行中被改会报 `未预期的记号 "fi" 附近有语法错误` 之类 | 长跑前先 `bash -n`；运行中**只改文档**，不改脚本 |
 | 父进程没调 `init_run`，而子脚本调了 | 两边的 `tee` 各自持有同一个输出文件的**独立偏移**，后写的会整段覆盖先写的 → 某一步输出凭空消失 | 入口脚本自己也要 `init_run`（现在是）；子进程另外重定向到自己的日志文件 |
 | 子进程退出码 0 就当成功 | 能发生「没跑起来但静默退 0」 | 退出码非 0 **或日志为空**都要告警（现在是） |
+| 本工作区路径带空格，却在 Makefile 里用 `$(dir …)` / `$(notdir …)` / `$(wildcard …)` / `include <带空格的路径>` | make 的这些内置函数**把空格当单词分隔**：`$(notdir /a/Application Support/b/x.gz)` 返回 `Application x.gz`；`$(wildcard …)` 只匹配到 `/a/Application`（而且还恰好是个目录，所以「看起来存在」）。后果：make 根本没读到 `config/audit.env`；`make dist` 会生一个名为 `Application xxx.tar.gz.sha256` 的 0 字节垃圾文件 | 路径处理全部交给 shell（`$$(basename …)`、`$${f%/*}`），别用这四个函数；`include` 需要把空格转义成 `\ `。（文件头有注释提醒） |
+| 把 make 变量命名成内置函数名（如 `strip`） | `$(call strip,…)` **不报错、只是不干活**，拿到的是没处理过的原值。表现：`make run SUB=…` 把带引号的 URL 原样递给 curl（`"https://…?token=…"`，curl 报奇怪的错）；`--from ""China,Japan,United States,Germany""` 被 shell 切成两个参数 | 自定义宏名加前缀（现在是 `_pnq_unquote`） |
+| 想用 `make -n` 干看命令再贴日志 | `make -n run` / `make -n batch` 会把 `config/audit.env` 里的订阅 URL（带 token）**原样打出来**——make 的 dry-run 不经过 `mask_url()`。真跑时子进程会打码，dry-run 不会 | 截图/贴日志前注意（本文档自己就不用 `make -n` 演示） |
 
 `lib/iprisk.py` 的缓存与评分口径：
 

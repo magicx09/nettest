@@ -382,6 +382,32 @@ if t_begin "online: Dockerfile 的下载地址仍然有效（需 PNQ_TEST_NET=1�
 fi
 
 # ===========================================================================
+# Makefile：本工作区路径带空格，make 的 dir/notdir/wildcard/include 会把空格当
+# 单词分隔；而变量名 strip 与 make 内置函数同名会让 $(call strip,..) 静默不干活。
+# 这两个坑都真真实实踩过（make 读不到 audit.env；make run 把带引号的 URL 递给 curl）。
+if t_begin "Makefile：带空格路径与带引号的值都能正确处理"; then
+  if ! command -v make >/dev/null 2>&1; then
+    pass "本机没有 make，跳过"
+  else
+    # 用假订阅覆盖，避免把真订阅带进输出
+    out="$(cd "$ROOT" && make -n run PNQ_SUB='"https://example.com/t?token=FAKE"' 2>&1)"
+    case "$out" in
+      *'"https://example.com/t?token=FAKE"'*) pass "make run 传的是去掉引号的干净 URL" ;;
+      *) fail "make run 的 URL 不对：$(printf '%s' "$out" | head -2 | tr '\n' ' ')" ;;
+    esac
+    assert_not_contains "$out" '""https' "没有「引号套引号」"
+
+    out2="$(cd "$ROOT" && make -n batch 2>&1)"
+    assert_contains "$out2" '-f ".*"' "make batch 的 -f 取值干净（.* 而且没有多余引号）"
+    assert_contains "$out2" '--samples "3"' "make batch 的 --samples 取值干净（3 而且没有多余引号）"
+
+    # ENTRY 为空时必须老老实实报错（不能把空值透传下去）
+    out3="$(cd "$ROOT" && make -n chain PNQ_ENTRY='""' 2>&1)"
+    assert_contains "$out3" '请先在 config' "PNQ_ENTRY 为空时报错而不是透传空值"
+  fi
+fi
+
+# ===========================================================================
 printf '\n%s\n' "------------------------------------------------------------"
 if [ "$FAIL" = 0 ]; then
   printf '%s\n' "${C_GRN}全部通过${C_RESET}：$PASS 项${SKIP:+ (跳过 $SKIP 组)}"

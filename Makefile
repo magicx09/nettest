@@ -1,21 +1,36 @@
 # ---------------------------------------------------------------------------
-# proxy-node-audit —— 常用操作入口
-#
-# 说明：config/audit.env 用 shell 语法写（带引号），既能被 bash source，
-#       也能被 Make include。这里用 strip 宏把引号去掉，避免拼接出错。
+# 注意：本工作区路径里带空格（…/Application Support/…），而 make 的 dir / notdir /
+# wildcard / include 这些内置函数**把空格当单词分隔**：
+#   $(notdir /a/Application Support/b/x.gz)  ->  "Application x.gz"
+#   $(wildcard /a/Application Support/b/f)   ->  只匹配到 /a/Application（而且是目录！）
+# 所以路径处理一律交给 shell（带好引号），不要用这些函数。
+# 历史上就因此出过两个问题：make 根本没读到 config/audit.env；
+# make dist 会生一个名为 "Application xxx.tar.gz.sha256" 的 0 字节垃圾文件。
 # ---------------------------------------------------------------------------
 SHELL      := /usr/bin/env bash
-ROOT       := $(shell cd "$(dir $(lastword $(MAKEFILE_LIST)))" && pwd)
+
+# 用 shell 取本 Makefile 所在目录（绝不用 $(dir)：它会把路径从空格处切两半）
+ROOT       := $(shell f='$(MAKEFILE_LIST)'; d=$${f%/*}; [ "$$d" = "$$f" ] && d=.; cd "$$d" && pwd)
 BIN        := $(ROOT)/bin
 ENV_FILE   := $(ROOT)/config/audit.env
 
-ifneq (,$(wildcard $(ENV_FILE)))
-include $(ENV_FILE)
+# include 需要把空格转义成 \ ，否则它会把一个路径当成两个文件找
+space      := $(subst ,, )
+ENV_FILE_MK := $(subst $(space),\ ,$(ENV_FILE))
+
+ifeq ($(shell test -f "$(ENV_FILE)" && echo yes),yes)
+include $(ENV_FILE_MK)
 endif
 
-# 去掉值两端可能存在的双引号
-strip = $(patsubst "%",%,$(patsubst "%",%,$(1)))
-val   = $(call strip,$(1))
+# 去掉值两端可能存在的双引号（config/audit.env 用 shell 语法写，值都带引号）
+#
+# 两个坑：
+# 1) 不能写成 patsubst "%" -> %：`PNQ_ENTRY=""` 这种「引号里是空」匹配不上，
+#    两个引号会被原样带下去（`--entry """"`、`--from ""China,...""` 被 shell 切成两个参数）。
+# 2) 这个宏**不能叫 strip**：make 自带了同名内置函数，`$(call strip,...)` 会
+#    拿到没处理过的原值（不报错、只是不干活）。所以叫 _pnq_unquote。
+_pnq_unquote = $(subst ",,$(1))
+val   = $(call _pnq_unquote,$(1))
 
 CFG      := $(call val,$(PNQ_CONFIG))
 SUB      := $(call val,$(PNQ_SUB))
@@ -91,8 +106,9 @@ dist:
 	git -C "$(ROOT)" archive --format=tar.gz \
 		--prefix=proxy-node-audit-$(VERSION)/ \
 		-o "$(TARBALL)" HEAD
-	@cd "$(DIST)" && shasum -a 256 "$(notdir $(TARBALL))" > "$(notdir $(TARBALL)).sha256" 2>/dev/null \
-		|| sha256sum "$(TARBALL)" > "$(TARBALL).sha256"
+	@cd "$(DIST)" && f="$$(basename "$(TARBALL)")" && \
+		{ shasum -a 256 "$$f" > "$$f.sha256" 2>/dev/null || sha256sum "$$f" > "$$f.sha256"; } && \
+		echo "sha256: $$(cut -d' ' -f1 "$$f.sha256")"
 	@echo ""
 	@echo "发布包: $(TARBALL)"
 	@echo "校验和: $(TARBALL).sha256"
