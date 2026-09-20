@@ -44,7 +44,7 @@ GPLIMIT  := $(call val,$(or $(PNQ_GP_LIMIT),2))
 
 export ABUSEIPDB_API_KEY IPQS_API_KEY IPREGISTRY_API_KEY IP2LOCATION_API_KEY PROXYCHECK_KEY GLOBALPING_TOKEN
 
-.PHONY: help deps doctor test node node-deep node-quick batch batch-full chain score report rescore run all list show clean install dist bump-check
+.PHONY: help deps doctor test node node-deep node-quick batch batch-full chain score report rescore run all list show clean install dist portable bump-check
 
 VERSION := $(shell head -1 "$(ROOT)/VERSION" 2>/dev/null | tr -d '[:space:]')
 DIST    := $(ROOT)/dist
@@ -59,6 +59,8 @@ help:
 	@echo "  make deps        检查依赖并给出安装命令（不会静默安装；macOS 需 brew install bash grep）"
 	@echo "  make test        离线测试（不联网、不动你的数据，改代码后必跑）"
 	@echo "  make dist        打发布包 dist/proxy-node-audit-$(VERSION).tar.gz（需先 commit）"
+	@echo "  make portable    ↑ 额外打一个 macOS 便携包（自带 bash/python/mihomo，解压即用，约 100MB）"
+	@echo "  make portable ARGS=\"--from-worktree\"   用当前工作区的内容打（默认用 git HEAD）"
 	@echo "  make install     安装到 ~/.local，之后直接用 pnq 命令"
 	@echo "  make node        节点侧一键体检（在落地机上跑）"
 	@echo "  make node ARGS=\"--public\"      允许上传到上游公开报告站（默认隐私模式 -p）"
@@ -117,6 +119,12 @@ dist:
 	@echo "发布时把这两个文件传到 GitHub Release（tag 用 v$(VERSION)）："
 	@echo "  gh release create v$(VERSION) \"$(TARBALL)\" \"$(TARBALL).sha256\" --generate-notes"
 	@echo "另需把 install.sh 里的 PNQ_VERSION_DEFAULT 改成 $(VERSION)"
+
+# 便携包：自带运行时（bash/python/mihomo/nexttrace/jq），解压即用，目标机器上什么都不用装。
+# 与 dist 一样默认用 git HEAD 里的内容；要拿当前工作区打就 ARGS="--from-worktree"。
+# 注意：这里没有引号裹 ARGS，参数里别有空格（--from-worktree / --keep 这种都是无空格的）。
+portable:
+	@bash "$(ROOT)/tools/build-portable.sh" $(ARGS)
 
 node:
 	@bash "$(BIN)/01-node-check.sh" --mode standard $(ARGS)

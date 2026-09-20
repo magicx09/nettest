@@ -60,13 +60,21 @@ show "${C_BLD}[必需]${C_RESET}"
 if resolve_bash4; then
   row_ok "bash 4+          $PNQ_BASH4 ($(bash_ver "$PNQ_BASH4"))"
 else
-  row_err "bash 4+          未找到（上游 IPQuality/NetQuality 必需）→ brew install bash"
+  case "$PNQ_OS" in
+    windows) row_err "bash 4+          未找到（上游 IPQuality/NetQuality 必需）。便携包自带，缺了说明包没解压完整" ;;
+    macos)   row_err "bash 4+          未找到（上游 IPQuality/NetQuality 必需）→ brew install bash（或直接用便携包，里面自带）" ;;
+    *)       row_err "bash 4+          未找到（上游 IPQuality/NetQuality 必需）→ brew install bash" ;;
+  esac
 fi
 
 if detect_python >/dev/null 2>&1; then
   row_ok "python3         $(command -v "$PY") ($("$PY" -c 'import sys;print("%d.%d.%d"%sys.version_info[:3])'))"
 else
-  row_err "python3         未找到（评分/报告/JSON 处理都要）→ apt install python3 | brew install python3"
+  case "$PNQ_OS" in
+    windows) row_err "python3         未找到（评分/报告都要）。便携包自带 python，缺了说明包没解压完整" ;;
+    macos)   row_err "python3         未找到 → brew install python3（或直接用便携包，里面自带）" ;;
+    *)       row_err "python3         未找到（评分/报告/JSON 处理都要）→ apt install python3 | brew install python3" ;;
+  esac
 fi
 
 if have_cmd curl; then row_ok "curl            $(command -v curl) ($(bin_ver curl --version))"; else row_err "curl            未找到 → apt install curl | brew install curl"; fi
@@ -75,7 +83,11 @@ if have_cmd mihomo; then
   # mihomo 的版本 flag 是 -v，不是 --version
   row_ok "mihomo          $(command -v mihomo) ($(bin_ver mihomo -v))"
 else
-  row_err "mihomo          未找到（逐节点实测要靠它把流量导进节点）→ brew install mihomo | 见 docs/tools.md"
+  case "$PNQ_OS" in
+    windows) row_err "mihomo          未找到（逐节点实测要靠它把流量导进节点）。便携包自带，缺了说明包没解压完整" ;;
+    macos)   row_err "mihomo          未找到 → brew install mihomo（或直接用便携包，里面自带）| 见 docs/tools.md" ;;
+    *)       row_err "mihomo          未找到（逐节点实测要靠它把流量导进节点）→ brew install mihomo | 见 docs/tools.md" ;;
+  esac
 fi
 
 # 写权限：报告、缓存、mihomo 工作目录都写在 out/ 下
@@ -98,7 +110,11 @@ fi
 if resolve_nexttrace; then
   row_ok "nexttrace       $(command -v "$NT" 2>/dev/null || echo "$NT") （链路追踪更详细）"
 else
-  row_warn "nexttrace       未找到 → --chain 会跳过本地路由取证（其余照跑）→ brew install nexttrace"
+  case "$PNQ_OS" in
+    windows) row_warn "nexttrace       未找到 → --chain 会跳过本地路由取证。便携包自带，缺了说明没解压完整" ;;
+    macos)   row_warn "nexttrace       未找到 → --chain 会跳过本地路由取证（其余照跑）→ brew install nexttrace" ;;
+    *)       row_warn "nexttrace       未找到 → --chain 会跳过本地路由取证（其余照跑）" ;;
+  esac
 fi
 
 if have_cmd clash-speedtest; then
@@ -114,6 +130,8 @@ if resolve_shims; then
   _shim_note=""
   [ "${PNQ_TIMEOUT_SHIM:-0}" = 1 ] && _shim_note="$_shim_note timeout"
   [ "${PNQ_SS_SHIM:-0}" = 1 ] && _shim_note="$_shim_note ss"
+  [ "${PNQ_NC_SHIM:-0}" = 1 ] && _shim_note="$_shim_note nc"
+  [ "${PNQ_UUIDGEN_SHIM:-0}" = 1 ] && _shim_note="$_shim_note uuidgen"
   [ "${PNQ_NEXTTRACE_SHIM:-0}" = 1 ] && _shim_note="$_shim_note nexttrace"
   if [ -n "$_shim_note" ]; then
     row_ok "内置 shim       已补:$_shim_note （$PNQ_SHIMDIR）"
@@ -146,11 +164,26 @@ show "${C_BLD}[平台]${C_RESET}"
 _os="$(uname -s) $(uname -r) $(uname -m)"
 show "  $_os"
 show "  当前 bash: $(bash -c 'echo $BASH_VERSION')（本工具自身兼容 3.2；4+ 只被上游脚本需要）"
-case "$(uname -s)" in
-  Darwin) show "  已验证：macOS（就是当前这台机器）" ;;
-  Linux)  show "  已验证：Linux（CI 里跑的是同一套一键命令）" ;;
-  *)      show "  ${C_YEL}注意：Windows / WSL 未做过完整验证，建议走 docker/ 或 WSL2${C_RESET}" ;;
+case "$PNQ_OS" in
+  macos)   show "  ${C_GRN}平台判定: macOS${C_RESET}" ;;
+  linux)   show "  ${C_GRN}平台判定: Linux${C_RESET}" ;;
+  windows) show "  ${C_GRN}平台判定: Windows（MSYS2 环境）${C_RESET}" ;;
+  *)       show "  ${C_YEL}平台判定: 未知，按 Linux 处理${C_RESET}" ;;
 esac
+
+# 便携包：解压出来就能跑的那种，把自己带了什么摆出来
+if [ -n "$PNQ_RUNTIME_DIR" ]; then
+  show ""
+  show "${C_BLD}[便携包]${C_RESET}"
+  show "  runtime/: $PNQ_RUNTIME_DIR"
+  if [ -n "$PNQ_BASH4" ]; then show "  自带 bash: $PNQ_BASH4 ($(bash_ver "$PNQ_BASH4"))"; fi
+  if [ -n "$PY" ]; then show "  自带 python: $(command -v "$PY") ($("$PY" -c 'import sys;print("%d.%d.%d"%sys.version_info[:3])' 2>/dev/null))"; fi
+  if have_cmd mihomo; then show "  自带 mihomo: $(command -v mihomo)"; fi
+  if resolve_nexttrace; then show "  自带 nexttrace: $(command -v "$NT" 2>/dev/null || echo "$NT")"; fi
+  if have_cmd jq; then show "  自带 jq: $(command -v jq)"; fi
+else
+  show "  （非便携包模式：依赖都用系统 PATH 里的）"
+fi
 
 # ------------------------------ 结论 --------------------------------------
 show ""

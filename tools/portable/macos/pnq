@@ -1,0 +1,123 @@
+#!/bin/bash
+# ---------------------------------------------------------------------------
+# proxy-node-audit 便携包启动器（macOS）
+#
+# 这个脚本刻意只用 bash 3.2 的语法：它必须能被 macOS 自带的 /bin/bash 跑起来，
+# 因为它的任务就是「把自己带的 bash 5 / python3 / mihomo / nexttrace / jq
+# 顶到 PATH 最前面」，然后再去跑真正的程序。
+#
+# 用法：
+#   ./pnq <订阅链接>          一键全量评测
+#   ./pnq --check             环境自检
+#   ./pnq --help              全部参数
+# ---------------------------------------------------------------------------
+set -uo pipefail
+
+# 解析自身所在目录（跟随软链，最多 40 跳）
+_pnq_self="${BASH_SOURCE[0]:-$0}"
+_hops=0
+while [ -L "$_pnq_self" ] && [ "$_hops" -lt 40 ]; do
+  _dir="$(cd "$(dirname "$_pnq_self")" && pwd)"
+  _pnq_self="$(readlink "$_pnq_self")"
+  case "$_pnq_self" in /*) ;; *) _pnq_self="$_dir/$_pnq_self" ;; esac
+  _hops=$((_hops + 1))
+done
+HERE="$(cd "$(dirname "$_pnq_self")" && pwd)"
+RT="$HERE/runtime"
+
+msg()  { printf '%s\n' "$*" >&2; }
+die()  { printf '\n[x] %s\n\n' "$*" >&2; exit 1; }
+
+case "${1:-}" in
+  -h|--help)
+    exec "$HERE/bin/audit.sh" --help
+    ;;
+  --fix-quarantine)
+    if command -v xattr >/dev/null 2>&1; then
+      xattr -dr com.apple.quarantine "$HERE" 2>/dev/null || true
+      msg "[+] 已清除 $HERE 下的隔离属性"
+    fi
+    exit 0
+    ;;
+esac
+
+# ------------------------------ 架构判定 -----------------------------------
+_arch="$(uname -m 2>/dev/null || echo unknown)"
+case "$_arch" in
+  arm64|aarch64) ARCH="arm64" ;;
+  x86_64|amd64)  ARCH="x64" ;;
+  *) die "不认识的 CPU 架构：$_arch" ;;
+esac
+
+# ------------------------------ 自带运行时 ---------------------------------
+PNQ_BASH_LOCAL="$RT/bash"
+PY_DIR="$RT/python/$ARCH"
+BIN_DIR="$RT/bin/$ARCH"
+SHARED_DIR="$RT/bin/shared"
+
+[ -d "$RT" ] || die "这个目录里没有 runtime/，便携包似乎没解压完整。
+    请把压缩包**整个解压**成文件夹后再运行（不要在压缩包里直接双击）。
+    目录: $HERE"
+
+[ -x "$PNQ_BASH_LOCAL" ] || die "缺 runtime/bash（本便携包自带的 bash 5）。
+    压缩包可能没解压完整 → 重新解压一次。
+    目录: $HERE"
+
+if [ ! -d "$BIN_DIR" ]; then
+  _has=""
+  for d in "$RT/bin"/*; do [ -d "$d" ] && _has="$_has $(basename "$d")"; done
+  die "这个包里的运行时是：${_has:-（空的）}，但你的机器是 $ARCH。
+    请下载对应架构的便携包（或告诉我们你需要 $ARCH 版本）。"
+fi
+[ -x "$BIN_DIR/mihomo" ] || die "缺运行时: $BIN_DIR/mihomo
+    压缩包没解压完整 → 重新解压一次。目录: $HERE"
+[ -x "$SHARED_DIR/nexttrace" ] || die "缺运行时: $SHARED_DIR/nexttrace
+    压缩包没解压完整 → 重新解压一次。目录: $HERE"
+
+# ------------------------------ 隔离属性自愈 -------------------------------
+# 从网上下载的压缩包解压后，里头每个可执行文件都带 com.apple.quarantine，
+# 首次运行时 macOS 会把它们当成「未验证的软件」直接杀掉（表现是 killed: 9）。
+# 这些文件是我们自己包里的、用户也已经决定要跑了，所以顺手清掉并说明一声。
+if command -v xattr >/dev/null 2>&1 && [ -x "$BIN_DIR/mihomo" ]; then
+  if xattr -p com.apple.quarantine "$BIN_DIR/mihomo" >/dev/null 2>&1; then
+    msg "[*] 首次运行：正在清除 macOS 隔离属性（xattr -dr com.apple.quarantine）…"
+    xattr -dr com.apple.quarantine "$RT" 2>/dev/null || true
+    xattr -dr com.apple.quarantine "$HERE/bin" "$HERE/lib" 2>/dev/null || true
+  fi
+fi
+
+# ------------------------------ 顶到 PATH 最前面 ----------------------------
+# 顺序很重要：自带的放最前面，系统里的同名工具（比如 brew 的旧 mihomo）不会抢走。
+PATH="$BIN_DIR:$SHARED_DIR:$PY_DIR/bin:$RT:$PATH"
+export PATH
+export PNQ_PORTABLE=1
+export PNQ_RUNTIME="$RT"
+export PNQ_RUNTIME_DIR="$RT"
+# 让主程序知道该用哪个 bash 跑上游脚本（而不是系统那个 3.2）
+export PNQ_BASH="$PNQ_BASH_LOCAL"
+
+case "${1:-}" in
+  ""|--interactive)
+    # 双击进来（或者直接 ./pnq）时，给一段人话的引导，而不是一堆参数说明
+    msg "proxy-node-audit 便携版 $(cat "$HERE/VERSION" 2>/dev/null || echo '')"
+    msg "自带运行时: bash $(("$PNQ_BASH_LOCAL" -c 'echo ${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}' 2>/dev/null || echo '?')), $ARCH"
+    msg ""
+    msg "用法:"
+    msg "  ./pnq <订阅链接>        一键评测（订阅要 Clash/Mihomo 格式，带 &flag=meta）"
+    msg "  ./pnq --check           环境自检"
+    msg "  ./pnq --help            全部参数"
+    msg ""
+    if [ -t 0 ]; then
+      printf '直接粘贴订阅链接回车即可开跑（不跑就按回车跳过）：\n> ' >&2
+      _sub=""
+      read -r _sub || true
+      if [ -n "$_sub" ]; then
+        exec "$PNQ_BASH_LOCAL" "$HERE/bin/audit.sh" --sub "$_sub"
+      fi
+    fi
+    exec "$PNQ_BASH_LOCAL" "$HERE/bin/audit.sh" --help
+    ;;
+  *)
+    exec "$PNQ_BASH_LOCAL" "$HERE/bin/audit.sh" "$@"
+    ;;
+esac

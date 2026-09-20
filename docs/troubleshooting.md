@@ -182,3 +182,84 @@ iperf3 则可能量到回环/本地 TUN 的吞吐。本机 DNS 是 `198.18.0.170
 **别把订阅 URL 提交进 git**：它带你的 token，等于账号密码。
 `config/audit.env` 已在 `.gitignore` 里；命令行传参则只会出现在你自己的 shell history 和
 `out/<run-id>/batch/mihomo/source.yaml`（已被 `.gitignore` 覆盖）。
+
+## 13. 便携包（macOS）：解压后双击没反应 / 报「已损坏」/ 缺 runtime
+
+先记住一件事：**便携包里的东西和系统里装的完全无关**——它自带 bash 5.3、python 3.12、mihomo、
+nexttrace、jq。所以「我系统里明明装了 xxx」这种排查方向可以直接跳过，问题基本都出在包本身。
+
+**13.1 「无法打开，因为 Apple 无法检查其是否包含恶意软件」/「已损坏，应将其移到废纸篓」**
+
+这是 macOS 给下载来的文件打的隔离属性（`com.apple.quarantine`），不是包真的坏了。
+
+```bash
+# 一次性清掉整个包的隔离属性（在本包目录下执行）
+./pnq --fix-quarantine
+```
+
+或者图形方式：在 Finder 里**右键** `双击运行.command` → 选「打开」→ 再点一次「打开」。
+注意是右键打开，双击只会弹那个拦截框。
+
+启动器本身也会检测并自动清一次（你已经决定运行它了，这一步只是省掉手动操作）；
+没权限清的时候会把命令打出来告诉你手动跑，不会静默失败。
+
+**13.2 「pack 里没有 runtime」/ 提示「文件不完整」**
+
+包没解压完整。最常见的原因是：
+
+- 直接双击 `.tar.gz` 用归档工具「预览」，只解出来一部分；
+- 用某些解压软件没处理长路径/符号链接。
+
+正确做法：
+
+```bash
+tar -xzf proxy-node-audit-<版本>-macos.tar.gz
+```
+
+解压后目录里应该有一个 `runtime/`，里面至少有 `bash`、`bin/`、`python/`。
+可以用 `./pnq --check` 检查，它会逐项告诉你缺什么。
+
+**13.3 `killed: 9` / `bad CPU type in executable`**
+
+- `killed: 9`：多半是隔离属性（见 13.1）。
+- `bad CPU type in executable`：包里的架构和机器不匹配。官方包同时含 arm64 与 x64，
+  启动时用 `uname -m` 自动选，正常不会出现；如果你自己改过 `runtime/`（比如只留了一个架构），
+  就会这样。用 `file runtime/bash` 看看，或者重新解压一份完整的。
+
+**13.4 Intel Mac 上跑得比较慢**
+
+包里两套架构都在，但只有当前架构的那套会被用到，所以体积不代表速度。
+真正慢的原因是 IP 质量深测（每个节点 1～2 分钟）——这和便携包无关。
+先用 `./pnq "<订阅>&flag=meta"` 跑默认档，急着看结果就 `--deep-top 0`。
+
+**13.5 能不能放在 `/Applications`、`Program Files` 里？**
+
+**别放。** 便携包把结果写在**自己目录下的 `out/`**，放在只读位置会写不进去。
+放在 `~/Downloads`、`~/Desktop`、`~/Documents` 下都行；中文路径和带空格的路径都支持。
+
+**13.6 想核对包里的二进制有没有被动过**
+
+`MANIFEST.txt` 里列了每个组件的版本、来源 URL 和 sha256：
+
+```bash
+grep -A2 'mihomo' MANIFEST.txt
+shasum -a 256 runtime/bin/arm64/mihomo      # 和自己算的对一下
+```
+
+**13.7 自己打包失败**
+
+```bash
+make portable                    # 需要 Xcode 命令行工具（clang/lipo）+ 能访问 GitHub
+make portable ARGS="--keep"      # 保留中间产物，便于看是哪一步炸的
+make portable ARGS="--cache DIR" # 换下载缓存目录（默认 build/cache）
+```
+
+打包脚本默认只装 **git HEAD 里提交过**的内容（和 `make dist` 一个道理），
+所以工作区里有未提交改动时要显式加 `--from-worktree`。
+打完一定要看它有没有报 `audit.env`——真订阅被带进包是**最严重**的打包事故，
+脚本会把 `config/audit.env` 删掉并在最后再扫一遍，扫到就直接终止。
+
+**13.8 Windows 便携包呢？**
+
+暂缓。`tools/portable/windows/` 里的启动器写好了，但还没打包、也没在真机验证过，
+所以现在不发布。Windows 用户请走 WSL2（Ubuntu），或者在 WSL2 里用 `install.sh`。

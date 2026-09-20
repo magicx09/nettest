@@ -1,13 +1,15 @@
 #!/bin/sh
 # ---------------------------------------------------------------------------
-# ss shim —— macOS 没有 iproute2 的 ss。
+# ss shim —— macOS 与 Windows(MSYS2) 都没有 iproute2 的 ss。
 #
 # 上游脚本里只有一处用它（IPQuality 判断「本机有没有监听 25 端口」）：
 #   ss -tano | grep -q ":25\b" && smail[local]=2 || smail[local]=0
 # 缺了它会往日志里打一行 "ss: command not found"。
 #
-# 这里用 netstat 近似实现，并把地址从 127.0.0.1.25 形式转成 127.0.0.1:25，
-# 这样上游的 ":25\b" 正则能正常工作。
+# 两种平台的 netstat 输出差别很大，所以分支处理：
+#   macOS   Proto Recv-Q Send-Q Local Foreign (state)   本地地址写成 127.0.0.1.25
+#   Windows 协议 本地地址 外部地址 状态                  本地地址已经写成 0.0.0.0:25
+# macOS 那份要把地址从 ip.port 转成 ip:port，Windows 那份原样输出即可。
 # ---------------------------------------------------------------------------
 PROTO=tcp
 case " $* " in
@@ -18,7 +20,15 @@ if ! command -v netstat >/dev/null 2>&1; then
   exit 0
 fi
 
-# macOS: netstat -an -p tcp
+case "$(uname -s 2>/dev/null)" in
+  MSYS*|MINGW*|CYGWIN*)
+    PROTO_UP="$(printf '%s' "$PROTO" | tr 'a-z' 'A-Z')"
+    netstat -an -p "$PROTO_UP" 2>/dev/null || netstat -an 2>/dev/null
+    exit 0
+    ;;
+esac
+
+# macOS / BSD：
 #   Proto Recv-Q Send-Q  Local Address          Foreign Address        (state)
 netstat -an -p "$PROTO" 2>/dev/null | awk '
   NR == 1 { next }

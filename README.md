@@ -56,6 +56,41 @@ make test          # 先自检（离线，不联网）
 ./bin/audit.sh "<订阅URL>&flag=meta"
 ```
 
+### 4. 便携包（macOS：什么都不用装，解压就用）
+
+给不想碰命令行、不想装依赖的人：**下载 `proxy-node-audit-<版本>-macos.tar.gz`，解压，双击 `双击运行.command`，粘贴订阅链接，等报告出来。**
+
+包里自带 macOS 需要的全部东西（bash 5.3、python 3.12、mihomo、nexttrace、jq），所以：
+
+- 不用 Homebrew，不用装 Python，不用装 bash 5；
+- 同一个包**同时支持 Apple Silicon 和 Intel**（启动时按架构自动选）；
+- 全程不需要 `sudo`，也不往系统目录写东西——报告写在包自己的 `out/` 里。
+  所以别把它放在 `/Applications` 这种只读位置。
+
+第一次打开如果被 macOS 拦住（下载来的文件带隔离属性），右键 `双击运行.command` → 选「打开」；或者跑一次：
+
+```bash
+./pnq --fix-quarantine      # 一次性清掉整个包的隔离属性
+```
+
+命令行用法跟安装版完全一致，只是把 `pnq` 换成本目录里的 `./pnq`：
+
+```bash
+./pnq --check                    # 环境体检（自带运行时，肯定不缺东西）
+./pnq "<订阅URL>&flag=meta"       # 一键评测
+./pnq --help
+```
+
+自己打这个包（开发用，需要 Xcode 命令行工具 + 网络）：
+
+```bash
+make portable                          # 用 git HEAD 里的内容打（推荐，内容干净）
+make portable ARGS="--from-worktree"   # 用当前工作区（含未提交改动）
+```
+
+> **Windows：暂缓。** `tools/portable/windows/` 里的启动器（`pnq.cmd` / `双击运行.cmd` / `run.cmd`）已经写好，
+> 但**还没打包、也没在真机上验证过**，所以暂时不提供 Windows 便携包。Windows 建议走 WSL2。
+
 ### 卸载 / 升级
 
 ```bash
@@ -71,8 +106,8 @@ pnq --uninstall --force       # 脚本里用
 | **必需** | 任意能跑 bash 的系统；`python3`（**只用标准库，无第三方包**）；`curl`；`mihomo`；GNU grep；bash 4+（上游脚本要求） |
 | **可选** | `nexttrace`（路由取证）、`clash-speedtest`（真实带宽）、`docker`（容器方式）、`globalping-cli`（入口视角） |
 | **已验证** | macOS（Apple Silicon，含系统自带 bash 3.2 与 `timeout`/`ss`/GNU grep 缺失的兜底）、Debian/Ubuntu 系 Linux |
-| **应该可以** | 其他 GNU/Linux 发行版（依赖齐全即可）；Windows 建议走 WSL2 |
-| **不能** | 路由器/OpenWrt（依赖太重）；原生 Windows cmd/PowerShell |
+| **应该可以** | 其他 GNU/Linux 发行版（依赖齐全即可）；Windows 走 WSL2 |
+| **不能** | 路由器/OpenWrt（依赖太重）；原生 Windows cmd/PowerShell（Windows 便携包暂缓） |
 
 macOS 上的一行准备：
 
@@ -112,7 +147,7 @@ docker run --rm --net=host -v "$PWD/out:/app/out" pnq "<订阅URL>&flag=meta"
 ```bash
 cd proxy-node-audit
 make doctor           # 环境预检：缺什么、怎么装（等同 pnq --check）
-make test             # 离线自检：64 项断言，不联网、不动你的数据
+make test             # 离线自检：100 项断言，不联网、不动你的数据
 
 # ★ 一行做完：下订阅 -> 起 mihomo -> 逐节点实测 -> 出口 IP 质量 -> 四维评分 -> REPORT.md
 ./bin/audit.sh "https://xxx/api/v1/client/subscribe?token=...&flag=meta"
@@ -275,6 +310,8 @@ proxy-node-audit/
 │   ├── lib.sh               公共函数（bash 3.2 兼容）
 │   ├── shims/timeout        macOS 缺 timeout 时的最小替代（上游靠它才不跳测量）
 │   ├── shims/ss             macOS 没有 iproute2 的 ss，用 netstat 模拟（上游靠它查本机 25 端口）
+│   ├── shims/nc             Windows 包里没有 nc 时的最小实现（上游探测端口用）
+│   ├── shims/uuidgen        Windows 包里没有 uuidgen 时的最小实现（上游拿它当随机源）
 │   ├── clean_output.py      上游输出清洗（\r 覆盖写语义 + 去 spinner/广告）
 │   ├── iprisk.py            多源 IP 质量共识评估
 │   ├── prepare_config.py    Clash 配置顶层键注入（不解析 YAML）
@@ -291,7 +328,27 @@ proxy-node-audit/
 │   ├── manual-checklist.md  自动化测不到的人工核验清单
 │   └── troubleshooting.md   常见坑
 ├── docker/Dockerfile        节点侧体检的容器镜像
+├── tools/
+│   ├── build-portable.sh    打 macOS 便携包（自带 bash/python/mihomo，解压即用）
+│   └── portable/macos/      便携包里的启动器（pnq / 双击运行.command / 先读我.txt）
 └── out/<run-id>/            每次运行的结果（latest 是软链）
+```
+
+便携包解压后的样子（macOS，同一份支持 arm64 与 x64）：
+
+```
+proxy-node-audit-<版本>-macos/
+├── pnq                      ★ 启动器（用包里的 bash 跑 bin/audit.sh）
+├── 双击运行.command           双击这个就行
+├── 先读我.txt                给不看命令行的人看的说明
+├── MANIFEST.txt            包里各组件版本 + sha256（方便核对）
+├── bin/ lib/ config/ docs/ tests/
+└── runtime/                自带运行时（系统里什么都不用装）
+    ├── bash                自编的 universal bash 5.3（系统的是 3.2，跑不了上游脚本）
+    ├── bin/arm64/          mihomo + jq
+    ├── bin/x64/            mihomo + jq
+    ├── bin/shared/         nexttrace（universal，两架构共用）
+    └── python/{arm64,x64}/ CPython 3.12（已剪枝）
 ```
 
 ---

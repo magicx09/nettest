@@ -25,8 +25,70 @@ die()   { err "$*"; exit 1; }
 hr()    { printf '%s\n' "------------------------------------------------------------" >&2; }
 title() { printf '\n%s\n' "${C_BLD}==> $*${C_RESET}" >&2; }
 
-have_cmd() { command -v "$1" >/dev/null 2>&1; }
+# ---------------------------------------------------------------------------
+# 平台判定
+#
+# 三种运行环境的差异都收敛到这几个变量里，其余代码只认 PNQ_OS：
+#   macos   系统自带 bash 3.2 + BSD 工具，便携包里带了 bash 5 和 python
+#   linux   正常 Linux（含 docker 镜像）
+#   windows MSYS2 / Git for Windows 的 bash 跑在 Windows 上（便携包自带）
+# 单元测试可以用 PNQ_FORCE_OS=windows 强制走某个分支（见 tests/run.sh）。
+# ---------------------------------------------------------------------------
+PNQ_OS=""
+pnq_detect_os() {
+  [ -n "$PNQ_OS" ] && return 0
+  local s o
+  s="$(uname -s 2>/dev/null || echo unknown)"
+  # 显式覆盖优先（测试用；也方便交叉验证别的平台的代码路径）
+  if [ -n "${PNQ_FORCE_OS:-}" ]; then PNQ_OS="$PNQ_FORCE_OS"; return 0; fi
+  case "$s" in
+    Darwin) PNQ_OS="macos" ;;
+    Linux)
+      o="$(uname -o 2>/dev/null || echo)"
+      case "$o" in Msys|MSYS|msys|Cygwin|CYGWIN) PNQ_OS="windows" ;; *) PNQ_OS="linux" ;; esac
+      ;;
+    MINGW*|MSYS*|CYGWIN*|CYGWIN_NT*) PNQ_OS="windows" ;;
+    *) PNQ_OS="unknown" ;;
+  esac
+  return 0
+}
+pnq_detect_os
+export PNQ_OS
+
+# 便携包（runtime/）里的东西：由 tools/build-portable.sh 组装。
+# 实际赋值在下面 ROOT_DIR 定义之后（这里只声明，免得前面用到时是未定义变量）；
+# 启动器能直接传进来，传进来的优先。
+PNQ_RUNTIME_DIR="${PNQ_RUNTIME_DIR:-}"
+
+# Windows 上命令名都带 .exe，而 command -v 在 MSYS2 下不一定帮忙补后缀。
+# 上游脚本里大量 `command -v xxx`，这里统一兜住。
+have_cmd() {
+  command -v "$1" >/dev/null 2>&1 && return 0
+  if [ "$PNQ_OS" = "windows" ]; then
+    case "$1" in
+      *.exe) ;; # 已经带后缀，上面查过了
+      *) command -v "$1.exe" >/dev/null 2>&1 && return 0 ;;
+    esac
+  fi
+  return 1
+}
 need_cmd() { have_cmd "$1" || die "缺少依赖命令: $1"; }
+
+# 打开文件/链接（audit.sh --open 用）
+pnq_open() {
+  local f="$1"
+  case "$PNQ_OS" in
+    macos) have_cmd open && { open "$f" 2>/dev/null && return 0; } ;;
+    windows)
+      if have_cmd cygpath && have_cmd cmd.exe; then
+        cmd.exe //c start "" "$(cygpath -w "$f")" >/dev/null 2>&1 && return 0
+      fi
+      ;;
+  esac
+  if have_cmd xdg-open; then xdg-open "$f" >/dev/null 2>&1 && return 0; fi
+  if have_cmd open; then open "$f" >/dev/null 2>&1 && return 0; fi
+  return 1
+}
 
 # 去掉 ANSI 转义 + 字符画广告 + \r 进度刷新。
 # 优先用 python 过滤器（能识别上游的 ANSI 字符画广告），没 python 就只用 sed。
@@ -82,6 +144,19 @@ resolve_shims() {
     PNQ_SS_SHIM=1
   fi
 
+  # nc：macOS 自带，Windows(MSYS2) 没有。01-node-check 会检查它是否存在，
+  # 真用起来也只是探端口，用 bash 的 /dev/tcp 实现一个等价物即可。
+  if ! have_cmd nc && [ -r "$LIB_DIR/shims/nc" ]; then
+    cp "$LIB_DIR/shims/nc" "$d/nc" 2>/dev/null && chmod +x "$d/nc" 2>/dev/null
+    PNQ_NC_SHIM=1
+  fi
+
+  # uuidgen：上游 RegionRestrictionCheck 用来生成随机 UUID，MSYS2 没有
+  if ! have_cmd uuidgen && [ -r "$LIB_DIR/shims/uuidgen" ]; then
+    cp "$LIB_DIR/shims/uuidgen" "$d/uuidgen" 2>/dev/null && chmod +x "$d/uuidgen" 2>/dev/null
+    PNQ_UUIDGEN_SHIM=1
+  fi
+
   PNQ_SHIMDIR="$d"
   return 0
 }
@@ -104,6 +179,11 @@ scan_upstream_issues() { # scan_upstream_issues <logfile...>
   - 上游调用了 iproute2 的 ss 命令（macOS 没有）。本工具已注入 lib/shims/ss 代替，
     如果你在日志里看到这行，说明 shim 没生效（开了 --skip-local 或自写脚本？）。"
     fi
+    if grep -qE "(nc|uuidgen): (未找到命令|command not found)" "$f" 2>/dev/null; then
+      hits="$hits
+  - 上游调用了 nc 或 uuidgen（Windows 上没有）。本工具已注入 lib/shims/ 里的等价物，
+    看到这行说明 shim 没生效。"
+    fi
   done
   if [ -n "$hits" ]; then
     warn "上游脚本在本机有已知降级：$hits"
@@ -120,7 +200,10 @@ check_upstream_extras() {
   done
   if [ -n "$missing" ]; then
     warn "缺少$missing —— 上游会跳过对应的“国际互连 / 带宽”测量项（会显示为 0 或 -1，不代表节点差）"
-    if [ "$(uname -s)" = Darwin ]; then
+    if [ "$PNQ_OS" = "windows" ]; then
+      warn "  Windows 便携包不含$missing（体积太大），这两项会显示为未测。"
+      warn "  想要这两项就在 WSL2 / Linux 上跑，或用 docker/ 里的镜像。"
+    elif [ "$(uname -s)" = Darwin ]; then
       warn "  macOS: brew install$missing"
       warn "  注意 mtr 需要 setuid 才能用原始套接字："
       warn "    sudo chown root:wheel ""$(brew --prefix 2>/dev/null || echo /opt/homebrew)/bin/mtr"" && sudo chmod u+s ""$(brew --prefix 2>/dev/null || echo /opt/homebrew)/bin/mtr"""
@@ -163,7 +246,15 @@ resolve_bash4() {
       PNQ_BASH4="$PNQ_BASH"; return 0
     fi
   fi
-  # 2) 常见位置与 PATH 里的候选
+  # 2) 便携包自带的 bash（macOS 包里是 5.3，Windows 包里是 MSYS2 的 5.x）
+  if [ -n "$PNQ_RUNTIME_DIR" ]; then
+    for c in "$PNQ_RUNTIME_DIR/bash" "$PNQ_RUNTIME_DIR/msys/usr/bin/bash" "$PNQ_RUNTIME_DIR/msys/usr/bin/bash.exe"; do
+      if [ -x "$c" ] && "$c" -c '[ "${BASH_VERSINFO[0]}" -ge 4 ]' 2>/dev/null; then
+        PNQ_BASH4="$c"; return 0
+      fi
+    done
+  fi
+  # 3) 常见位置与 PATH 里的候选
   for c in bash4 bash5 /opt/homebrew/bin/bash /usr/local/bin/bash /usr/bin/bash; do
     if have_cmd "$c" || [ -x "$c" ]; then
       if "$c" -c '[ "${BASH_VERSINFO[0]}" -ge 4 ]' 2>/dev/null; then
@@ -180,6 +271,10 @@ resolve_bash4() {
 
 bash4_hint() {
   warn "上游脚本（IPQuality / NetQuality）需要 bash 4+，当前只有：$(bash --version 2>/dev/null | head -1)"
+  if [ -n "$PNQ_RUNTIME_DIR" ]; then
+    warn "这个便携包里应该自带 bash，但没找到可用的：$PNQ_RUNTIME_DIR/bash"
+    warn "（包可能被杀毒软件/解压工具搞坏了，重新解压一份试试）"
+  fi
   warn "macOS 安装方法（任选其一）："
   warn "  brew install bash        # 装完会自动被检测到 /opt/homebrew/bin/bash"
   warn "  bash <(curl -sL https://raw.githubusercontent.com/xykt/IPQuality/main/ref/upgrade_bash.sh)"
@@ -280,6 +375,14 @@ LIB_DIR="$(cd "$(dirname "$_PNQ_LIB_SELF")" && pwd)"
 ROOT_DIR="$(cd "$LIB_DIR/.." && pwd)"
 OUT_ROOT="${PNQ_OUT:-$ROOT_DIR/out}"
 CONFIG_DIR="$ROOT_DIR/config"
+
+# 便携包识别：解压出来的目录里有 runtime/ 就是便携包。
+# 启动器（tools/portable/*/）会显式传 PNQ_RUNTIME_DIR 进来，那个优先——
+# 这样即使包的目录结构改了，也不会突然找不到自带运行时。
+if [ -z "$PNQ_RUNTIME_DIR" ] && [ -d "$ROOT_DIR/runtime" ]; then
+  PNQ_RUNTIME_DIR="$ROOT_DIR/runtime"
+fi
+export PNQ_RUNTIME_DIR
 
 # 版本号只有一个来源：仓库根的 VERSION 文件。
 # README / --version / 报告页脚都读它，避免三处写三个号。

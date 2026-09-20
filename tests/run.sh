@@ -26,6 +26,9 @@ cd "$ROOT" || exit 1
 
 FILTER="${1:-}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/pnq-test-XXXXXX")"
+# TMPDIR 可能以 / 结尾（macOS 就是），留着会变成 T//pnq-test-...，
+# 而启动器里的 cd+pwd 会把它规范成单斜杠，路径对比就会假失败。
+WORK="$(cd "$WORK" && pwd)"
 trap 'rm -rf "$WORK"' EXIT
 
 C_RESET=$'\033[0m'; C_GRN=$'\033[32m'; C_RED=$'\033[31m'; C_YEL=$'\033[33m'; C_BLD=$'\033[1m'
@@ -64,7 +67,10 @@ printf '%s\n\n' "  根目录: $ROOT"
 # ===========================================================================
 if t_begin "static: 所有 shell 脚本语法正确"; then
   bad=""
-  for f in "$ROOT"/bin/*.sh "$ROOT"/lib/*.sh "$ROOT"/tests/*.sh "$ROOT"/install.sh; do
+  # 便携包的启动器也算在内：它们会在别人的机器上跑，语法错=开箱就崩
+  for f in "$ROOT"/bin/*.sh "$ROOT"/lib/*.sh "$ROOT"/lib/shims/* "$ROOT"/tests/*.sh \
+           "$ROOT"/install.sh "$ROOT"/tools/*.sh "$ROOT"/tools/portable/macos/pnq \
+           "$ROOT"/tools/portable/macos/双击运行.command "$ROOT"/tools/portable/windows/launch.sh; do
     [ -r "$f" ] || continue
     bash -n "$f" 2>"$WORK/syn.err" || bad="$bad $(basename "$f")"
     [ -s "$WORK/syn.err" ] && bad="$bad $(basename "$f"):$(head -1 "$WORK/syn.err")"
@@ -405,6 +411,101 @@ if t_begin "Makefile：带空格路径与带引号的值都能正确处理"; the
     out3="$(cd "$ROOT" && make -n chain PNQ_ENTRY='""' 2>&1)"
     assert_contains "$out3" '请先在 config' "PNQ_ENTRY 为空时报错而不是透传空值"
   fi
+fi
+
+# ===========================================================================
+# 便携包：目标机器上什么都没有的时候，全靠这些启动器把自带运行时段出来。
+# 这里不真打包（要下 100MB），只把自己写的部分按真实结构搭个假包来测。
+if t_begin "portable: 启动器在 bash 3.2 下语法正确、不依赖 bash 4"; then
+  b32=""
+  for c in /bin/bash /usr/bin/bash; do
+    if [ -x "$c" ] && "$c" -c '[ "${BASH_VERSINFO[0]}" -eq 3 ]' 2>/dev/null; then b32="$c"; break; fi
+  done
+  for f in "$ROOT/tools/portable/macos/pnq" "$ROOT/tools/portable/macos/双击运行.command" \
+           "$ROOT/tools/portable/windows/launch.sh" "$ROOT/lib/shims/nc" "$ROOT/lib/shims/uuidgen"; do
+    body="$(cat "$f" 2>/dev/null)"
+    case "$body" in
+      *'declare -A'*|*mapfile*|*'${'*',,}'*|*'${'*'^^}'*)
+        fail "$(basename "$f") 用了 bash 4+ 专有语法（便携包要先用系统 bash 3.2 启起来）" ;;
+      *) pass "$(basename "$f") 没用 bash 4+ 专有语法" ;;
+    esac
+    if [ -n "$b32" ]; then
+      if "$b32" -n "$f" 2>"$WORK/b32.err"; then pass "$(basename "$f") 过 bash 3.2 语法检查"
+      else fail "$(basename "$f") 在 bash 3.2 下语法错：$(head -1 "$WORK/b32.err")"; fi
+    fi
+  done
+fi
+
+if t_begin "portable: 假包里启动器把自带运行时段到最前面"; then
+  # 找一个真 4+ 的 bash 当“包自带的 bash”；找不到就跳过（不假装通过）
+  big=""
+  for c in /opt/homebrew/bin/bash /usr/local/bin/bash /bin/bash /usr/bin/bash; do
+    if [ -x "$c" ] && "$c" -c '[ "${BASH_VERSINFO[0]}" -ge 4 ]' 2>/dev/null; then big="$c"; break; fi
+  done
+  if [ -z "$big" ]; then
+    pass "本机没有 bash 4+，跳过（真实包里的 bash 一定会被选中）"
+  else
+    fake="$WORK/fake-pkg"
+    arch="$(uname -m)"; case "$arch" in arm64|aarch64) arch=arm64 ;; *) arch=x64 ;; esac
+    mkdir -p "$fake/runtime/bin/$arch" "$fake/runtime/bin/shared" "$fake/bin"
+    cp "$big" "$fake/runtime/bash"; chmod +x "$fake/runtime/bash"
+    : >"$fake/runtime/bin/$arch/mihomo"; chmod +x "$fake/runtime/bin/$arch/mihomo"
+    : >"$fake/runtime/bin/shared/nexttrace"; chmod +x "$fake/runtime/bin/shared/nexttrace"
+    printf '#!/bin/bash\necho "STUB rc=0"\necho "ARGV=$*"\necho "PNQ_PORTABLE=$PNQ_PORTABLE"\necho "PNQ_BASH=$PNQ_BASH"\necho "PATH0=${PATH%%:*}"\n' >"$fake/bin/audit.sh"
+    chmod +x "$fake/bin/audit.sh"
+    cp "$ROOT/tools/portable/macos/pnq" "$fake/pnq"; chmod +x "$fake/pnq"
+    out="$(cd "$fake" && ./pnq --version 2>&1)"
+    assert_contains "$out" "STUB rc=0" "启动器能把参数透到 bin/audit.sh"
+    assert_contains "$out" "ARGV=--version" "参数原样传递（没被启动器吃掉）"
+    assert_contains "$out" "PNQ_PORTABLE=1" "标记了便携包模式"
+    assert_contains "$out" "PNQ_BASH=$fake/runtime/bash" "用的是包里的 bash，不是系统那个"
+    assert_contains "$out" "PATH0=$fake/runtime/bin/$arch" "自带 bin 在 PATH 最前面（不被系统同名工具抢走）"
+    # 故意抽掉 runtime：启动器必须给“包没解压完整”的人话提示，而不是抛一堆看不懂的错
+    rm -rf "$fake/runtime"
+    out2="$(cd "$fake" && ./pnq --version 2>&1)"
+    assert_contains "$out2" "没有 runtime" "缺 runtime 时提示清楚"
+    assert_contains "$out2" "解压" "提示里告诉用户该怎么办（重新解压）"
+  fi
+fi
+
+if t_begin "portable: Windows 启动器是纯 ASCII 且平台判定可用"; then
+  # cmd.exe 用本机 OEM 代码页（中文 Windows 是 GBK）解析 .cmd，UTF-8 中文会变乱码，
+  # 所以 .cmd 里一律只写 ASCII，中文说明放到 .txt 里。
+  for f in "$ROOT"/tools/portable/windows/*.cmd; do
+    n="$(LC_ALL=C grep -c '[^ -~	
+]' "$f" 2>/dev/null || echo 0)"
+    assert_eq "$n" "0" "$(basename "$f") 无非 ASCII 字符（不会被 cmd.exe 解析成乱码）"
+  done
+  assert_file "$ROOT/tools/portable/windows/run.cmd"
+  assert_file "$ROOT/tools/portable/windows/先读我.txt"
+  # 平台判定可以强制覆盖，方便在没有 Windows 的机器上验证 Windows 分支
+  os="$(PNQ_FORCE_OS=windows bash -c '. "$1/lib/lib.sh" >/dev/null 2>&1; echo "$PNQ_OS"' _ "$ROOT" 2>&1)"
+  assert_eq "$os" "windows" "PNQ_FORCE_OS=windows 生效"
+fi
+
+if t_begin "portable: runtime 里的 bash 优先于系统 bash"; then
+  big=""
+  for c in /opt/homebrew/bin/bash /usr/local/bin/bash /bin/bash /usr/bin/bash; do
+    if [ -x "$c" ] && "$c" -c '[ "${BASH_VERSINFO[0]}" -ge 4 ]' 2>/dev/null; then big="$c"; break; fi
+  done
+  if [ -z "$big" ]; then
+    pass "本机没有 bash 4+，跳过"
+  else
+    mkdir -p "$WORK/rt/runtime"
+    cp "$big" "$WORK/rt/runtime/bash"
+    got="$(PNQ_RUNTIME_DIR="$WORK/rt/runtime" bash -c '. "$1/lib/lib.sh" >/dev/null 2>&1; resolve_bash4; echo "$PNQ_BASH4"' _ "$ROOT" 2>&1)"
+    assert_eq "$got" "$WORK/rt/runtime/bash" "包里的 runtime/bash 被选中（不被系统 3.2 顶掉）"
+  fi
+fi
+
+if t_begin "portable: 打包脚本不会把真订阅带进包"; then
+  bp="$(cat "$ROOT/tools/build-portable.sh")"
+  assert_contains "$bp" 'rm -f "$dest/config/audit.env"' "从工作区拷文件后删掉 audit.env"
+  assert_contains "$bp" 'rm -f "$STAGE/config/audit.env"' "从 git HEAD 解出来后也删一遍"
+  assert_contains "$bp" 'name audit.env' "打完再扫一遍，发现 audit.env 就直接终止"
+  assert_not_contains "$bp" 'COPY config' "不做整目录配置拷贝"
+  # Windows 包暂缓：脚本里不应该有 windows 目标（免得以为已经支持了）
+  assert_not_contains "$bp" 'windows.zip' "没有 Windows 打包目标（暂缓，见 README）"
 fi
 
 # ===========================================================================

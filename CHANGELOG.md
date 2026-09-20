@@ -42,11 +42,19 @@
 
 ### 工程
 
-- `bin/doctor.sh` / `pnq --check`：依赖预检，区分必需项与可选项，并给出具体安装命令。
-- `tests/run.sh` / `make test`：65 项离线测试（不联网、不碰用户数据），含评分口径与安全加固的回归用例；
+- **macOS 便携包**（`make portable`）：解压即用，不用装 Homebrew/Python/bash 5。
+  包里自带自编的 universal bash 5.3（系统只有 3.2，跑不了上游脚本）、CPython 3.12（已剪枝）、
+  mihomo、nexttrace、jq；同一份包装同时支持 Apple Silicon 与 Intel，启动器按 `uname -m` 自动选。
+  双击 `双击运行.command` 或命令 `./pnq`；不需要 sudo，报告写在包自己的 `out/` 里。
+  *（Windows 便携包暂缓：启动器已写好，但未打包也未在真机验证，所以不发布。）*
+- `bin/doctor.sh` / `pnq --check`：依赖预检，区分必需项与可选项，并给出具体安装命令；
+  在便携包里会额外列出自带运行时（bash/python/mihomo/nexttrace/jq）的版本与架构。
+- `tests/run.sh` / `make test`：100 项离线测试（不联网、不碰用户数据），含评分口径、安全加固与
+  便携包启动器的回归用例；
   `PNQ_TEST_NET=1 make test` 会额外联网核对 Dockerfile 里写死的下载地址是否还有效
   （上游改过资产名就会静默失效，已经踩到两次）。
 - `make dist`：用 `git archive` 打发布包，只含提交过的东西；报错就不让打（有未提交改动时）。
+- `make portable`：打 macOS 便携包（同上，默认也只含 git HEAD 里提交过的东西）。
 - `install.sh`：装到 `~/.local`（或 `--prefix`），升级时保留订阅与历史结果。
 - `docker/Dockerfile`：容器方式（Linux 服务器；必须 `--net=host`）。
 - 环境兼容：macOS 自带 bash 3.2 与外层 `timeout`/`ss` 缺失都有兜底；
@@ -59,3 +67,5 @@
 - 上游 IPQuality 在 macOS 上的 DNSBL 阶段可能因 `xargs` 长度限制中断，
   此时会保留部分报告并明确标注「测量不完整」，不会伪装成完整结果。
 - `ipinfo_privacy` 等免费数据源会限流（HTTP 429），报告里的数据源清单会如实列出失败项。
+- **Windows 便携包还没发布**：`tools/portable/windows/` 里的启动器写好了，
+  但在真机验证前不放出来（写这个项目的人手里没有 Windows）。Windows 目前建议走 WSL2。

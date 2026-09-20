@@ -11,6 +11,9 @@ config/audit.env
 # 发布时上传到 GitHub Release（见 make dist 的输出提示）。
 dist/
 
+# 便携包构建中间产物：下载缓存（几百 MB 的第三方二进制）+ 暂存目录
+build/
+
 # 临时文件
 *.tmp
 *.log

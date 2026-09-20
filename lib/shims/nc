@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# ---------------------------------------------------------------------------
+# nc shim —— Windows(MSYS2) 与精简 Linux 上没有 netcat。
+#
+# 本项目和上游脚本用到 nc 的地方只有「探某个端口通不通」，
+# 而 bash 自带 /dev/tcp 就能做这件事，不需要额外的二进制。
+#
+# 支持的写法（够用即可，不追求覆盖完整 nc 接口）：
+#   nc -z host port            # 通 -> 0，不通 -> 1
+#   nc -z -w 3 host port       # 指定超时秒数
+#   nc -v -z host port         # 顺带打印一行结果
+#   nc -zv host port
+# 未识别的开关会被忽略（宁可多探一次，也不要因为一个开关报错就整段失败）。
+# ---------------------------------------------------------------------------
+set -uo pipefail
+
+host=""
+port=""
+wait_s=""
+verbose=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -z|-n) shift ;;
+    -v|-vv) verbose=1; shift ;;
+    -w|-W|-q)
+      if [ $# -ge 2 ]; then wait_s="$2"; shift 2; else shift; fi
+      ;;
+    -w*|-W*|-q*) wait_s="${1#-[wWq]}"; shift ;;
+    -4|-6|-u|-t|-l|-k|-N) shift ;;
+    --) shift; break ;;
+    -*) shift ;;
+    *)
+      if [ -z "$host" ]; then host="$1"; else port="$1"; fi
+      shift
+      ;;
+  esac
+done
+if [ -z "$port" ] && [ $# -ge 2 ]; then host="$1"; port="$2"; fi
+
+if [ -z "$host" ] || [ -z "$port" ]; then
+  printf 'nc(shim): 用法: nc [-z] [-w 秒] [-v] 主机 端口\n' >&2
+  exit 2
+fi
+
+# 真正做连接的那一小段：成功与否只看退出码。
+# bash 的 /dev/tcp 在被丢包的端口上会一直等到内核 TCP 超时（可能很久），
+# 所以用户给了 -w 秒数、且系统有 timeout 时，套一层超时。
+run_connect() {
+  if [ -n "$wait_s" ] && command -v timeout >/dev/null 2>&1; then
+    timeout "$wait_s" "${BASH:-bash}" -c 'exec 3<>"/dev/tcp/$1/$2"' _ "$host" "$port" 2>/dev/null
+  else
+    (exec 3<>"/dev/tcp/$host/$port") 2>/dev/null
+  fi
+}
+
+rc=0
+run_connect || rc=$?
+
+if [ "$rc" = "0" ]; then
+  [ "$verbose" = "1" ] && printf '%s %s 端口开放\n' "$host" "$port"
+  exit 0
+fi
+[ "$verbose" = "1" ] && printf '%s %s 端口不通\n' "$host" "$port"
+exit 1

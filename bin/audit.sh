@@ -451,7 +451,5 @@ if [ -n "$MISSING_DIMS" ]; then
 fi
 
 if [ "$WANT_OPEN" = 1 ]; then
-  if command -v open >/dev/null 2>&1; then open "$REPORT"
-  elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$REPORT"
-  fi
+  pnq_open "$REPORT" || warn "打不开报告文件，路径是: $REPORT"
 fi
