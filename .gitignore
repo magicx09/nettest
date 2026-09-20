@@ -1,0 +1,19 @@
+# 运行结果
+out/
+!out/.gitkeep
+
+# 含订阅地址与 API Key，绝对不要提交
+config/audit.env
+
+# 发布产物
+# 注意：不要把打好的包提交进仓库，它是 make dist 从提交历史里生成的结果，
+# 提交进来会导致「仓库里的包」和「提交内容」不一致。
+# 发布时上传到 GitHub Release（见 make dist 的输出提示）。
+dist/
+
+# 临时文件
+*.tmp
+*.log
+.DS_Store
+__pycache__/
+*.pyc

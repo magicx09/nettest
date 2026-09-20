@@ -1,0 +1,132 @@
+# ---------------------------------------------------------------------------
+# 两件事：
+#   1) checks  —— 每次 push / PR 都跑：语法 + 离线测试（不需要任何 secret，几秒钟）
+#   2) audit   —— 定时/手动跑真实订阅评测（需要 PNQ_SUB secret，很慢）
+#
+# 定时评测需要在仓库 Settings -> Secrets and variables -> Actions 里配置：
+#   PNQ_SUB               订阅 URL（必需，建议带 &flag=meta）
+#   ABUSEIPDB_API_KEY     可选
+#   IPQS_API_KEY          可选
+#   IPREGISTRY_API_KEY    可选
+#   IP2LOCATION_API_KEY   可选
+#   PROXYCHECK_KEY        可选
+#   PNQ_BLOCK             可选，节点名屏蔽关键词
+# ---------------------------------------------------------------------------
+name: proxy-node-audit
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # 每天 20:17 UTC（北京时间 04:17，避开整点拥堵）
+    - cron: "17 20 * * *"
+  workflow_dispatch:
+    inputs:
+      filter:
+        description: "节点名正则过滤"
+        required: false
+        default: ".*"
+      samples:
+        description: "采样次数"
+        required: false
+        default: "3"
+
+permissions:
+  contents: read
+
+jobs:
+  # 快速门禁：不碰网络、不需要 secret。打包发布前必须绿。
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 语法检查
+        run: |
+          set -eux
+          for f in bin/*.sh lib/*.sh tests/*.sh install.sh; do bash -n "$f"; done
+          for f in bin/*.py lib/*.py; do python3 -m py_compile "$f"; done
+
+      - name: 离线测试
+        run: make test
+
+  audit:
+    # 只有定时/手动才真去跑评测：push 上不跑（要 secret，且 90 分钟量级）
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: false
+
+      - name: 安装依赖
+        run: |
+          set -eux
+          # GitHub 的 ubuntu runner 已经是 bash 5 + GNU grep，
+          # 所以项目里的 resolve_bash4 / ensure_gnu_grep / timeout shim / ss shim 都不会触发，
+          # 这里只需要装项目自己的几个外部工具。
+          bash --version | head -1
+          grep -P 'e' <<< e >/dev/null && echo "GNU grep OK"
+          command -v timeout ss >/dev/null && echo "timeout/ss OK"
+          # mihomo 内核
+          MH_VERSION="$(curl -fsSL https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | jq -r .tag_name)"
+          curl -fsSL "https://github.com/MetaCubeX/mihomo/releases/download/${MH_VERSION}/mihomo-linux-amd64-${MH_VERSION}.gz" -o /tmp/mihomo.gz
+          gunzip -c /tmp/mihomo.gz > /tmp/mihomo && chmod +x /tmp/mihomo && sudo mv /tmp/mihomo /usr/local/bin/mihomo
+          mihomo -v
+          # 带宽测速
+          go install github.com/faceair/clash-speedtest@latest
+          # 路由追踪
+          curl -fsSL https://raw.githubusercontent.com/nxtrace/NTrace-core/main/nexttrace.sh | sudo bash || true
+          nexttrace --version || NTrace-core --version || true
+          # 全球探针：本项目默认直接用 api.globalping.io 的 HTTP 接口，CLI 只是备选
+          go install github.com/jsdelivr/globalping-cli@latest || true
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          ./bin/install-deps.sh || true
+
+      - name: 批量评测 + 评分 + 报告
+        env:
+          PNQ_SUB: ${{ secrets.PNQ_SUB }}
+          ABUSEIPDB_API_KEY: ${{ secrets.ABUSEIPDB_API_KEY }}
+          IPQS_API_KEY: ${{ secrets.IPQS_API_KEY }}
+          IPREGISTRY_API_KEY: ${{ secrets.IPREGISTRY_API_KEY }}
+          IP2LOCATION_API_KEY: ${{ secrets.IP2LOCATION_API_KEY }}
+          PROXYCHECK_KEY: ${{ secrets.PROXYCHECK_KEY }}
+        run: |
+          set -eux
+          if [ -z "${PNQ_SUB:-}" ]; then
+            echo "::error::未配置 PNQ_SUB secret"
+            exit 1
+          fi
+          # 一行跑完：下订阅 -> 逐节点实测 -> 出口 IP 风险 -> 评分 -> REPORT.md
+          # 不开 --ipquality：Runner 上节点数可能过百，逐节点 IPQuality 会把 90 分钟跑穿。
+          bash bin/audit.sh "$PNQ_SUB" \
+            -f "${{ github.event.inputs.filter || '.*' }}" \
+            -b "${PNQ_BLOCK:-剩余流量|到期|官网|订阅|过期}" \
+            --samples "${{ github.event.inputs.samples || '3' }}" \
+            --interval 2 \
+            --speed --speed-mode download
+
+      - name: 报告预览
+        run: |
+          set -eux
+          echo "### 报告预览" >> "$GITHUB_STEP_SUMMARY"
+          head -60 out/latest/REPORT.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: 上传结果
+        uses: actions/upload-artifact@v4
+        with:
+          name: proxy-node-audit-${{ github.run_number }}
+          path: |
+            out/latest/REPORT.md
+            out/latest/score/
+            out/latest/batch/nodes.csv
+            out/latest/batch/nodes.json
+            out/latest/batch/risk.json
+          retention-days: 30

@@ -1,0 +1,70 @@
+#!/bin/sh
+# pnq-timeout —— 最小可用的 `timeout` 实现（POSIX sh，macOS 自带没有 coreutils 时的兜底）
+#
+# 为什么需要：xykt/NetQuality 用 `timeout 50 nexttrace ...`、`timeout 60 mtr ...`、
+# `timeout 20 iperf3 ...` 来限制单次测量的耗时。macOS 默认没有 timeout，
+# 于是这些测量会**整个跳过**，最后拿到一堆 0 / -1，看起来像节点很差，其实是工具缺失。
+#
+# 支持： [--signal SIG] [--kill-after DUR] DURATION COMMAND [ARG...]
+# 返回： 命令自身退出码；超时被杀则返回 124（与 GNU coreutils 一致）
+
+sig=TERM
+kill_after=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -s|--signal) sig="${2:-TERM}"; shift 2 ;;
+    --signal=*)  sig="${1#*=}"; shift ;;
+    -k|--kill-after) kill_after="${2:-}"; shift 2 ;;
+    --kill-after=*)  kill_after="${1#*=}"; shift ;;
+    -t|--foreground|--preserve-status|--verbose) shift ;;
+    --) shift; break ;;
+    -*) echo "timeout(shim): 不支持的选项 $1" >&2; exit 125 ;;
+    *) break ;;
+  esac
+done
+
+if [ $# -lt 2 ]; then
+  echo "timeout(shim): 用法: timeout [--signal SIG] DURATION COMMAND [ARG...]" >&2
+  exit 125
+fi
+
+dur="$1"; shift
+case "$dur" in
+  *s) dur="${dur%s}" ;;
+  *m) dur="$(awk "BEGIN{print ${dur%m}*60}")" ;;
+  *h) dur="$(awk "BEGIN{print ${dur%h}*3600}")" ;;
+esac
+
+ticks="$(awk -v d="$dur" 'BEGIN{ n=int(d/0.2); if (n<1) n=1; print n }')" || exit 125
+kill_ticks=""
+if [ -n "$kill_after" ]; then
+  kill_ticks="$(awk -v d="$kill_after" 'BEGIN{ n=int(d/0.2); if (n<1) n=1; print n }')"
+fi
+
+# 让子进程单独成进程组，超时能杀掉它 fork 出来的孙进程（curl / tracepath 之类）
+set -m 2>/dev/null || true
+"$@" &
+pid=$!
+set +m 2>/dev/null || true
+
+i=0
+while [ "$i" -lt "$ticks" ]; do
+  if ! kill -0 "$pid" 2>/dev/null; then
+    wait "$pid"; exit $?
+  fi
+  sleep 0.2
+  i=$((i + 1))
+done
+
+kill -"$sig" "$pid" 2>/dev/null
+if [ -n "$kill_ticks" ]; then
+  j=0
+  while [ "$j" -lt "$kill_ticks" ] && kill -0 "$pid" 2>/dev/null; do
+    sleep 0.2
+    j=$((j + 1))
+  done
+  kill -9 "$pid" 2>/dev/null
+fi
+kill -9 "-$pid" 2>/dev/null
+wait "$pid" 2>/dev/null
+exit 124

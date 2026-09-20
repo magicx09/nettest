@@ -1,0 +1,169 @@
+{
+  "version": 2,
+  "_comment": "四维评分权重与阈值（IP 质量 / 速度 / 稳定性 / 链路）。改这里就能调口径，无需动代码。",
+  "weights": {
+    "ip_quality": 40,
+    "speed": 25,
+    "stability": 15,
+    "chain": 20,
+    "unlock": 15
+  },
+  "_weights_comment": "unlock 默认**不参与**评分：它只反映落地 IP 与流媒体的缘分，漂移大、上游误判多，且跟「节点质量」关系弱。这里的 15 只在显式加 --unlock 时才生效（维度没测到就不会被计入归一化，所以默认口径实际是 40/25/15/20）。",
+  "_renamed_from": "旧版本的 risk 维度已改名为 ip_quality，旧配置里的 risk 权重和 risk 配置块仍能被代码识别。",
+  "speed": {
+    "bandwidth": 0.65,
+    "latency": 0.35,
+    "_comment": "bandwidth/latency 权重之和应为 1"
+  },
+  "stability": {
+    "jitter": 0.5,
+    "loss": 0.5
+  },
+  "unlock_services": {
+    "ChatGPT": 3,
+    "Gemini": 3,
+    "Claude": 2,
+    "Netflix": 2.5,
+    "DisneyPlus": 2,
+    "Youtube": 2,
+    "AmazonPrimeVideo": 1.5,
+    "TikTok": 1.5,
+    "Spotify": 1
+  },
+  "unlock_status_credit": {
+    "Yes": 1.0,
+    "Originals": 0.5,
+    "No": 0.0,
+    "Block": 0.0,
+    "Failed": 0.0,
+    "Banned": 0.0,
+    "_comment": "上游 -l cn 时 JSON/报告里是中文状态，所以中英两套都要写；status_aliases 会兵底",
+    "解锁": 1.0,
+    "原生解锁": 1.0,
+    "自制剧": 0.5,
+    "仅自制剧": 0.5,
+    "失败": 0.0,
+    "屏蔽": 0.0,
+    "封禁": 0.0,
+    "中国": 0.0,
+    "待测": 0.0
+  },
+  "status_aliases": {
+    "_comment": "状态 -> 得分。用于把上游/RRC 的各种口径统一；大小写与前后空格会被忽略",
+    "yes": 1.0,
+    "unlocked": 1.0,
+    "yes (region:": 1.0,
+    "originals": 0.5,
+    "originals only": 0.5,
+    "仅自制剧": 0.5,
+    "仅原创": 0.5,
+    "no": 0.0,
+    "failed": 0.0,
+    "failed (network connection)": 0.0,
+    "blocked": 0.0,
+    "block": 0.0,
+    "banned": 0.0,
+    "china": 0.0,
+    "中国": 0.0,
+    "屏蔽": 0.0,
+    "失败": 0.0,
+    "封禁": 0.0,
+    "未知": 0.0,
+    "unknown": 0.0
+  },
+  "unlock_conflict_policy": "best",
+  "_unlock_conflict_policy_comment": "两个源对同一服务结论不一致时怎么计分：best=取较乐观者（默认，因为这类工具的失败多是 DNS/超时造成的假阴性，而带具体地区的成功结果需要服务真的响应，造假难度更高）；worst=取较悲观者（保守口径）；ipquality=无条件以 IPQuality 为准。无论选哪个，不一致都会写进报告备注。",
+  "unlock_report_aliases": {
+    "_comment": "RegionRestrictionCheck 输出里的服务名 -> 评分用的键",
+    "youtube premium": "Youtube",
+    "youtube": "Youtube",
+    "netflix": "Netflix",
+    "disney+": "DisneyPlus",
+    "disney plus": "DisneyPlus",
+    "amazon prime video": "AmazonPrimeVideo",
+    "amazonpv": "AmazonPrimeVideo",
+    "chatgpt": "ChatGPT",
+    "google gemini": "Gemini",
+    "gemini": "Gemini",
+    "claude": "Claude",
+    "tiktok": "TikTok",
+    "spotify registration": "Spotify",
+    "spotify": "Spotify",
+    "reddit": "Reddit"
+  },
+  "chain": {
+    "return_path_weight": 0.6,
+    "evidence_weight": 0.4,
+    "return_path_tier_score": {
+      "premium": 100,
+      "standard": 65,
+      "mobile": 60,
+      "unknown": 45
+    },
+    "return_path_asn": {
+      "_comment": "premium = 真正花钱买的优质回国线路（CN2 GIA / CUII 9929 / CMIN2 / CMI / CTG）；standard = 普通骨干与国内城域网（AS4812 上海电信、AS4134 163、AS4837 169 等）。注意：03 默认追的是「本机 → 入口」的正向路径，第一跳必然是你自己的宽带 ISP，所以标准里这些国内 ASN 很常见；只有出现 premium 里的 ASN 才说明商家真的买了优质线路。",
+      "premium": [4809, 9929, 58807, 58453, 23764],
+      "standard": [4837, 4134, 4808, 17621, 4812],
+      "mobile": [9808, 56048, 24400, 56040, 56041]
+    },
+    "evidence_keys": {
+      "01-entry-dns.txt": 15,
+      "02-nexttrace.txt": 30,
+      "03-globalping.txt": 25,
+      "04-asn.txt": 15,
+      "entry_resolved_ip": 15
+    }
+  },
+  "ip_quality": {
+    "_comment": "IP 质量维度 = 100 - 风险分。风险分由下面 4 个子项加权平均，再叠加黑名单实锤扣分。子项权重之和应为 1；某个子项没数据时会被剔除并重新归一化（不会当 0 分）。",
+    "sub_weights": {
+      "iprisk": 0.4,
+      "ipq_score": 0.3,
+      "ipq_factor": 0.2,
+      "attributes": 0.1
+    },
+    "_sub_comment": "iprisk = 本工具自己的多源共识（lib/iprisk.py，5~11 个免费源）；ipq_score = 上游 IPQuality 的 Score.* 多源打分均值；ipq_factor = 上游 IPQuality 的 Factor.* 代理/VPN/Tor/机房/滥用 标记共识；attributes = IP 属性（原生/广播、家宽/机房/移动、25 端口、注册地是否一致）。ipq_score/ipq_factor/attributes 都要跑 --ipquality 才有。",
+    "score_keys": ["IP2LOCATION", "SCAMALYTICS", "ipapi", "AbuseIPDB", "IPQS", "DBIP"],
+    "_score_keys_comment": "上游 IPQuality 的 Score.* 字段名。值是 0-100 的风险分（越低越干净），可能带 % 或写成 null，代码会逐个归一化。IPQS 目前上游恒为 null，留着占位。",
+    "attribute_penalty": {
+      "broadcast": 12,
+      "datacenter": 12,
+      "mobile": 5,
+      "campus": 4,
+      "commercial": 2,
+      "port25_closed": 3,
+      "registered_mismatch": 6,
+      "native_bonus": -8,
+      "residential_bonus": -12,
+      "_comment": "负数表示加分（更干净）。broadcast = Info.Type 是「广播IP」而非「原生IP」；datacenter/mobile/campus/commercial = Type.Usage 多源共识的使用类型；port25_closed = Mail.Port25 为 false（机房 IP 的典型特征，家宽通常通）；registered_mismatch = 注册地区与广播地区不一致。"
+    },
+    "usage_datacenter_keywords": ["机房", "数据中心", "商业", "hosting", "datacenter", "data center", "cloud", "vps", "server", "colo", "transit"],
+    "usage_mobile_keywords": ["移动", "蜂窝", "mobile", "cellular", "wireless"],
+    "usage_campus_keywords": ["教育", "学校", "大学", "campus", "education", "university", "school"],
+    "usage_residential_keywords": ["家宽", "住宅", "家庭", "residential", "isp", "broadband", "cable", "dsl", "fios"],
+    "blacklist_penalty_per_marked": 0.35,
+    "blacklist_penalty_per_listed": 6,
+    "blacklist_expect_min_libs": 100,
+    "_blacklist_comment": "上游正常会查 400+ 个 DNSBL 库；在 macOS 上 BSD xargs 拼不出这么长的命令会整批失败，此时 Total 会小得离谱（比如 1）。低于 blacklist_expect_min_libs 时报告会明确警告：“未命中”不等于“干净”。",
+    "factor_weight": {
+      "Proxy": 18,
+      "VPN": 16,
+      "Tor": 40,
+      "Server": 12,
+      "Abuser": 26,
+      "Robot": 8
+    },
+    "consensus_ratio": 0.5,
+    "minority_credit": 0.4,
+    "authoritative_sources": ["IPQS", "AbuseIPDB", "SCAMALYTICS"],
+    "authoritative_credit": 0.75,
+    "_comment": "flag 被 >=consensus_ratio 的源标记得满分；只被少数源标记拿 minority_credit；\n若命中的源里有 authoritative_sources（如 IPQS 的代理/VPN 判定）则至少拿 authoritative_credit"
+  },
+  "grades": [
+    { "min": 88, "grade": "A+", "label": "生产可用" },
+    { "min": 78, "grade": "A", "label": "生产可用（有轻微短板）" },
+    { "min": 68, "grade": "B", "label": "一般，可日常使用" },
+    { "min": 55, "grade": "C", "label": "仅备用 / 特定场景" },
+    { "min": 0, "grade": "D", "label": "不推荐 / 高风险" }
+  ]
+}
