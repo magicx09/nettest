@@ -38,7 +38,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
     url="$(curl -fsSL https://api.github.com/repos/MetaCubeX/mihomo/releases/latest \
-      | grep -oE "https://[^\"]*/mihomo-linux-${arch}-v[0-9][^\"]*\.gz" | head -1)"; \
+      | grep -oE "https://[^\"]*/mihomo-linux-${arch}-v[0-9]+\.[0-9]+\.[0-9]+\.gz" | head -1)"; \
     if [ -n "$url" ]; then \
       curl -fsSL "$url" -o /tmp/mihomo.gz && gzip -d /tmp/mihomo.gz && \
       install -m 0755 /tmp/mihomo /usr/local/bin/mihomo && rm -f /tmp/mihomo; \
@@ -48,12 +48,14 @@ RUN set -eux; \
     mihomo -v
 
 # NextTrace：带 ASN 的可视化路由（判断回程线路的核心工具）
+# 注意：官方发布的是**裸二进制**（nexttrace_linux_amd64），不是一个 tar.gz（旧版本有 tar.gz，已改）。
+# 正则末尾的引号是故意的：不锤死的话会先匹配到 nexttrace-tiny_linux_amd64。
 RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
     url="$(curl -fsSL https://api.github.com/repos/nxtrace/NTrace-core/releases/latest \
-      | grep -oE "https://[^\"]*linux_${arch}\.tar\.gz" | head -1)"; \
+      | grep -oE "https://[^\"]*/nexttrace_linux_${arch}\"" | tr -d '\"' | head -1)"; \
     if [ -n "$url" ]; then \
-      curl -fsSL "$url" -o /tmp/nt.tar.gz && tar -xzf /tmp/nt.tar.gz -C /usr/local/bin && rm -f /tmp/nt.tar.gz; \
+      curl -fsSL "$url" -o /usr/local/bin/nexttrace && chmod 0755 /usr/local/bin/nexttrace; \
     fi; \
     nexttrace --version || echo "nexttrace 安装失败，路由取证将跳过（不影响其余流程）"
 

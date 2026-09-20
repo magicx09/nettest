@@ -339,6 +339,49 @@ if t_begin "secrets: 订阅与密钥不会被发布出去"; then
 fi
 
 # ===========================================================================
+# 可选联网用例：Dockerfile 里的下载地址是写死的 URL 模式，上游改个文件名就会静默失效。
+# 刚才就真的踩到两次（mihomo 会先匹配到 -v1-go120- 的专用构建；nexttrace 早已
+# 不提供 linux_amd64.tar.gz、只发裸二进制）。默认不跑，发版前手动开：
+#     PNQ_TEST_NET=1 make test
+if t_begin "online: Dockerfile 的下载地址仍然有效（需 PNQ_TEST_NET=1）"; then
+  if [ "${PNQ_TEST_NET:-0}" != "1" ]; then
+    pass "未开启联网测试，跳过（发版前用 PNQ_TEST_NET=1 make test 跑一次）"
+  else
+    command -v curl >/dev/null 2>&1 && curl -fsSL https://api.github.com/ -o /dev/null 2>/dev/null \
+      && pass "网络连通" || fail "连不上 api.github.com"
+
+    # Dockerfile 里的模式必须是收紧过的：宽松的 mihomo-linux-amd64-v[0-9]* 会先匹配到
+    # mihomo-linux-amd64-v1-go120-v1.19.31.gz（Go 版本专用构建）而不是标准构建。
+    df="$(cat "$ROOT/docker/Dockerfile")"
+    assert_contains "$df" 'mihomo-linux-${arch}-v[0-9]+\.[0-9]+\.[0-9]+\.gz' "Dockerfile 锁定完整版本号的 mihomo 资产"
+    assert_contains "$df" 'nexttrace_linux_${arch}' "Dockerfile 用裸二进制名（官方不再发 tar.gz）"
+    assert_not_contains "$df" 'linux_${arch}\.tar\.gz' "Dockerfile 里没有已失效的 tar.gz 老写法"
+
+    # 下面两行正则是有意跟 Dockerfile 保持一致的副本：它们要回答的是
+    # 「上游现在还用这个名字吗」，卡住了就把 Dockerfile 一起改掉。
+    mh_json="$(curl -fsSL https://api.github.com/repos/MetaCubeX/mihomo/releases/latest 2>/dev/null)"
+    nt_json="$(curl -fsSL https://api.github.com/repos/nxtrace/NTrace-core/releases/latest 2>/dev/null)"
+
+    for arch in amd64 arm64; do
+      u="$(printf '%s' "$mh_json" | grep -oE "https://[^\"]*/mihomo-linux-${arch}-v[0-9]+\.[0-9]+\.[0-9]+\.gz" | head -1)"
+      case "$u" in
+        *"mihomo-linux-$arch-v"*.gz)
+          case "$u" in
+            *go1*|*compatible*|*softfloat*) fail "mihomo/$arch 匹配到了非标准构建：$(basename "$u")" ;;
+            *) pass "mihomo/$arch → $(basename "$u")" ;;
+          esac ;;
+        *) fail "mihomo/$arch 没解析出下载地址（上游改名了？）" ;;
+      esac
+      un="$(printf '%s' "$nt_json" | grep -oE "https://[^\"]*/nexttrace_linux_${arch}\"" | tr -d '\"' | head -1)"
+      case "$un" in
+        *nexttrace_linux_$arch) pass "nexttrace/$arch → $(basename "$un")" ;;
+        *) fail "nexttrace/$arch 没解析出下载地址（上游改名了？）" ;;
+      esac
+    done
+  fi
+fi
+
+# ===========================================================================
 printf '\n%s\n' "------------------------------------------------------------"
 if [ "$FAIL" = 0 ]; then
   printf '%s\n' "${C_GRN}全部通过${C_RESET}：$PASS 项${SKIP:+ (跳过 $SKIP 组)}"

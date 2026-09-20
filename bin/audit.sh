@@ -430,7 +430,7 @@ labels = {"speed": "速度", "stability": "稳定性", "unlock": "媒体解锁",
 flags = {"speed": "--speed",
          "ip_quality": "--ipquality（或靠默认的 --deep-top 前排补测）",
          "risk": "--ipquality（或靠默认的 --deep-top 前排补测）",
-         "chain": "（单独跑 ./bin/03-chain-trace.sh --entry host:port）",
+         "chain": "--chain（它内部会跑 03-chain-trace.sh，需带 --entry host:port）",
          "unlock": "--ipquality --unlock"}
 rows = data.get("results") or []
 total = len(rows)

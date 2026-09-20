@@ -43,8 +43,10 @@
 ### 工程
 
 - `bin/doctor.sh` / `pnq --check`：依赖预检，区分必需项与可选项，并给出具体安装命令。
-- `tests/run.sh` / `make test`：离线测试（不联网、不碰用户数据），含评分口径与安全加固的回归用例。
-- `make dist`：用 `git archive` 打发布包，只含提交过的东西。
+- `tests/run.sh` / `make test`：65 项离线测试（不联网、不碰用户数据），含评分口径与安全加固的回归用例；
+  `PNQ_TEST_NET=1 make test` 会额外联网核对 Dockerfile 里写死的下载地址是否还有效
+  （上游改过资产名就会静默失效，已经踩到两次）。
+- `make dist`：用 `git archive` 打发布包，只含提交过的东西；报错就不让打（有未提交改动时）。
 - `install.sh`：装到 `~/.local`（或 `--prefix`），升级时保留订阅与历史结果。
 - `docker/Dockerfile`：容器方式（Linux 服务器；必须 `--net=host`）。
 - 环境兼容：macOS 自带 bash 3.2 与外层 `timeout`/`ss` 缺失都有兜底；
