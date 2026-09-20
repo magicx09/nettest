@@ -94,9 +94,16 @@ project_stage() {
     [ -e "$ROOT_DIR/$it" ] || continue
     cp -R "$ROOT_DIR/$it" "$dest/" || return 1
   done
+  # 走 --from-worktree 时会把本机跑出来的 __pycache__ 一并拷进来：
+  # 那是开发机 python（比如 3.14）的字节码，包里是 3.12，用不上；
+  # 而且 .pyc 里存的是编它的机器上的绝对路径（可能带用户名），属于信息泄露。
+  # git HEAD 那条路没这问题（.gitignore 挡了），工作区那条路必须自己扫。
+  find "$dest" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null
+  find "$dest" -name '*.pyc' -delete 2>/dev/null
   rm -f "$dest/config/audit.env"
   [ -f "$dest/config/audit.env.example" ] || warn "包里缺 config/audit.env.example，用户会不知道订阅填哪"
   [ -n "$(find "$dest" -name audit.env -print -quit 2>/dev/null)" ] && die "包里混进了 config/audit.env（含真实订阅 token），已终止"
+  [ -n "$(find "$dest" -name '*.pyc' -print -quit 2>/dev/null)" ] && die "包里混进了 .pyc（用 --from-worktree 时常见），已终止"
   return 0
 }
 
@@ -202,14 +209,19 @@ done
 ok "python: $PY_VER（arm64: $(arch_short "$RT/python/arm64/bin/python3")）"
 
 # ------------------------------ mihomo（双架构）-----------------------------
-for pair in "arm64:arm64" "x64:amd64"; do
-  A="${pair%%:*}"; MH="${pair##*:}"
-  GZ="$(dl "https://github.com/MetaCubeX/mihomo/releases/download/$MIHOMO_VER/mihomo-darwin-$MH-$MIHOMO_VER.gz" \
-           "mihomo-darwin-$MH-$MIHOMO_VER.gz")" || die "下载 mihomo($MH) 失败"
-  gzip -dc "$GZ" > "$RT/bin/$A/mihomo" || die "解压 mihomo($MH) 失败"
+# amd64 用 -compatible 构建（GOAMD64=v1）：官方普通 darwin-amd64 包是 v3 构建，
+# 启动时 Go runtime 会查 CPUID，在 Rosetta 和 2013 年前的老 Intel Mac（没 AVX2）上直接报
+#   This program can only be run on AMD64 processors with v3 microarchitecture support.
+# 而 x64 包本来就是为了照顾 Intel 机器，所以宁可损失那点指令集优化。
+# （实测：普通包在 Rosetta 下必挂，-compatible 包正常。）
+for pair in "arm64:arm64:" "x64:amd64:-compatible"; do
+  A="${pair%%:*}"; rest="${pair#*:}"; MH="${rest%%:*}"; SUF="${rest##*:}"
+  GZ="$(dl "https://github.com/MetaCubeX/mihomo/releases/download/$MIHOMO_VER/mihomo-darwin-$MH$SUF-$MIHOMO_VER.gz" \
+           "mihomo-darwin-$MH$SUF-$MIHOMO_VER.gz")" || die "下载 mihomo($MH$SUF) 失败"
+  gzip -dc "$GZ" > "$RT/bin/$A/mihomo" || die "解压 mihomo($MH$SUF) 失败"
   chmod +x "$RT/bin/$A/mihomo"
 done
-ok "mihomo: $MIHOMO_VER"
+ok "mihomo: $MIHOMO_VER（x64 用 compatible 构建）"
 
 # ------------------------------ nexttrace（官方通用）------------------------
 # nexttrace / jq 是通用二进制，只存一份（按架构各存一份会白白胖 25MB）
@@ -250,6 +262,23 @@ for p in runtime/bin/x64/mihomo runtime/python/x64/bin/python3 \
   [ -s "$STAGE/$p" ] || die "包里缺 $p（打出来的包不完整）"
 done
 
+# x64 那套在 ARM 机器上没法原生跑，但只要装了 Rosetta 就能验真：
+# 这一步真的漏过一个坑——官方 darwin-amd64 的 mihomo 是 GOAMD64=v3 构建，
+# 在 Rosetta（以及没 AVX2 的老 Intel Mac）上启动就报 "only be run on AMD64
+# processors with v3 microarchitecture support"。光看文件存在是看不出来的。
+if [ "$(uname -m)" = "arm64" ]; then
+  if arch -x86_64 /usr/bin/true >/dev/null 2>&1; then
+    smoke "x64 python（Rosetta）" "$RT/python/x64/bin/python3" -c 'import json;print("py x64 ok")' \
+      || die "x64 的 python3 跑不起来（Intel 机器会直接不能用）"
+    smoke "x64 jq（Rosetta）" "$JQ_BIN" --version || warn "x64 jq 没输出（继续）"
+    smoke "x64 mihomo（Rosetta）" "$RT/bin/x64/mihomo" -v \
+      || die "x64 的 mihomo 跑不起来（Intel 机器会直接不能用；选 compatible 构建）"
+    smoke "x64 nexttrace（Rosetta）" "$RT/bin/shared/nexttrace" -V || warn "x64 nexttrace 没输出（继续）"
+  else
+    warn "本机没装 Rosetta，x64 那套只做了文件检查（没真跑）"
+  fi
+fi
+
 # ------------------------------ 清单 ---------------------------------------
 {
   printf 'proxy-node-audit %s —— macOS 便携包清单\n' "$VERSION"
@@ -262,7 +291,7 @@ done
   printf '  %-16s %-12s arm64=%s\n' cpython "$PY_VER" "$(sha_of "$RT/python/arm64/bin/python3")"
   printf '  %-16s %-12s x64=%s\n'   ''      ''           "$(sha_of "$RT/python/x64/bin/python3")"
   printf '  %-16s %-12s arm64=%s\n' mihomo "$MIHOMO_VER" "$(sha_of "$RT/bin/arm64/mihomo")"
-  printf '  %-16s %-12s x64=%s\n'   ''      ''           "$(sha_of "$RT/bin/x64/mihomo")"
+  printf '  %-16s %-12s x64=%s（compatible 构建，老 Intel / Rosetta 也能跑）\n' '' '' "$(sha_of "$RT/bin/x64/mihomo")"
   printf '  %-16s %-12s %s\n' nexttrace "$NT_VER" "$(sha_of "$RT/bin/shared/nexttrace")"
   printf '  %-16s %-12s %s\n' jq        "$JQ_VER" "$(sha_of "$JQ_BIN")"
   printf '\n[runtime 目录说明]\n'
@@ -273,7 +302,7 @@ done
   printf '\n[来源]\n'
   printf '  bash      https://ftp.gnu.org/gnu/bash/bash-%s.tar.gz （本机 clang 编 arm64+x86_64）\n' "$BASH_SRC_VER"
   printf '  cpython   https://github.com/astral-sh/python-build-standalone （%s / %s）\n' "$PY_RELEASE" "$PY_VER"
-  printf '  mihomo    https://github.com/MetaCubeX/mihomo %s （GPL-3.0）\n' "$MIHOMO_VER"
+  printf '  mihomo    https://github.com/MetaCubeX/mihomo %s （GPL-3.0；x64 取 darwin-amd64-compatible）\n' "$MIHOMO_VER"
   printf '  nexttrace https://github.com/nxtrace/NTrace-core %s （GPL-3.0）\n' "$NT_VER"
   printf '  jq        https://github.com/jqlang/jq %s （MIT）\n' "$JQ_VER"
   printf '\n[用法]\n'

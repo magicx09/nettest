@@ -503,6 +503,8 @@ if t_begin "portable: 打包脚本不会把真订阅带进包"; then
   assert_contains "$bp" 'rm -f "$dest/config/audit.env"' "从工作区拷文件后删掉 audit.env"
   assert_contains "$bp" 'rm -f "$STAGE/config/audit.env"' "从 git HEAD 解出来后也删一遍"
   assert_contains "$bp" 'name audit.env' "打完再扫一遍，发现 audit.env 就直接终止"
+  # --from-worktree 会把开发机的 __pycache__ 拷进来（.pyc 里存的是绝对路径，还会带用户名）
+  assert_contains "$bp" "name '__pycache__'" "工作区快照会剔掉 __pycache__"
   assert_not_contains "$bp" 'COPY config' "不做整目录配置拷贝"
   # Windows 包暂缓：脚本里不应该有 windows 目标（免得以为已经支持了）
   assert_not_contains "$bp" 'windows.zip' "没有 Windows 打包目标（暂缓，见 README）"
